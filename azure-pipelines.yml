@@ -1,0 +1,52 @@
+trigger:
+- master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  subscriptionId: '5518087e-908d-4cb5-ac6a-d09d9eef4fb6'
+  resourceGroupPrimary: 'PrimaryRG'
+  resourceGroupSecondary: 'RecoveryRG'
+  locationPrimary: 'EastUS'
+  locationSecondary: 'WestUS'
+  recoveryVaultName: 'RecoveryVault'
+  vmName: 'PrimaryVM'
+  policyName: 'ASRReplicationPolicy'
+  fabricName: 'Azure'
+  primaryContainerName: 'PrimaryContainer'
+  secondaryContainerName: 'SecondaryContainer'
+  mappingName: 'PrimaryToSecondaryMapping'
+  recoveryPlanName: 'RecoveryPlanforPrimaryVM'
+
+steps:
+# Azure Login using service principal
+- task: AzureCLI@2
+  inputs:
+    azureSubscription: 'AzureSP'
+    scriptType: 'pscore'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Set Recovery Services Vault Context (using existing vault)
+      $vault = Get-AzRecoveryServicesVault -ResourceGroupName $(resourceGroupSecondary) -Name $(recoveryVaultName)
+      Set-AzRecoveryServicesAsrVaultContext -Vault $vault
+
+      # Create and configure replication policy (if needed)
+      $policy = New-AzRecoveryServicesAsrPolicy -Name $(policyName) -ReplicationProvider "HyperVReplicaAzure" -ReplicationFrequencyInSeconds 300 -RecoveryPointRetentionInHours 24 -AppConsistentSnapshotFrequencyInHours 4
+
+      # Create protection containers
+      $primaryContainer = New-AzRecoveryServicesAsrProtectionContainer -FabricName $(fabricName) -Name $(primaryContainerName) -VaultId $vault.Id
+      $secondaryContainer = New-AzRecoveryServicesAsrProtectionContainer -FabricName $(fabricName) -Name $(secondaryContainerName) -VaultId $vault.Id
+
+      # Create protection container mapping
+      $containerMapping = New-AzRecoveryServicesAsrProtectionContainerMapping -FabricName $(fabricName) -PrimaryProtectionContainerName $(primaryContainerName) -RecoveryProtectionContainerName $(secondaryContainerName) -PolicyId $policy.Id -MappingName $(mappingName)
+
+      # Get the VM to be protected
+      $vm = Get-AzVM -ResourceGroupName $(resourceGroupPrimary) -Name $(vmName)
+
+      # Enable replication for the VM
+      $replicationProtectedItem = New-AzRecoveryServicesAsrReplicationProtectedItem -AzureToAzure -ProtectionContainer $primaryContainer -SourceVMId $vm.Id -Policy $policy
+
+      # Output replication status
+      $replicationProtectedItem = Get-AzRecoveryServicesAsrReplicationProtectedItem -ProtectionContainerMapping $containerMapping
+      Write-Output "Replication status for VM $(vmName): $($replicationProtectedItem.ReplicationHealth)"
